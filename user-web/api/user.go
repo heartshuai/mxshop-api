@@ -3,15 +3,47 @@ package api
 import (
 	"context"
 	"fmt"
+	"mxshop-api/user-web/forms"
+	"mxshop-api/user-web/global"
+	"mxshop-api/user-web/global/response"
+	"mxshop-api/user-web/middlewares"
+	"mxshop-api/user-web/models"
+	"mxshop-api/user-web/proto"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"mxshop-api/user-web/proto"
-	"net/http"
 )
 
+func removeTopStruct(fields map[string]string) map[string]string {
+	res := map[string]string{}
+	for field, err := range fields {
+		res[field[strings.Index(field, ".")+1:]] = err
+	}
+	return res
+}
+func HandleValidatorError(c *gin.Context, err error) {
+
+	errs, ok := err.(validator.ValidationErrors)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+		})
+	}
+	c.JSON(http.StatusBadRequest, gin.H{
+		"message": removeTopStruct(errs.Translate(global.Trans)),
+	})
+	return
+
+}
 func HandleGrpcErrorToHttp(err error, ctx *gin.Context) {
 	//将grpc的code转换成http的状态码
 	if err != nil {
@@ -40,36 +72,125 @@ func HandleGrpcErrorToHttp(err error, ctx *gin.Context) {
 	}
 }
 func GetUserList(ctx *gin.Context) {
-	ip := "127.0.0.1"
-	port := 8080
 	//拨号连接用户grpc服务
-	userConn, err := grpc.Dial(fmt.Sprintf("%s: %d", ip, port), grpc.WithInsecure())
+	userConn, err := grpc.Dial(fmt.Sprintf("%s: %d", global.ServerConfig.UserSrvInfo.Host, global.ServerConfig.UserSrvInfo.Port), grpc.WithInsecure())
 	if err != nil {
 		zap.S().Errorw("[GetUserList] 连接用户服务失败", "msg", err.Error())
 		return
 	}
 	//调用接口
-	UserSrcClient := proto.NewUserClient(userConn)
-	rsp, err := UserSrcClient.GetUserList(context.Background(), &proto.PageInfo{
-		Pn:    1,
-		PSize: 2,
+	UserSrvClient := proto.NewUserClient(userConn)
+	pn := ctx.DefaultQuery("pn", "0")
+	pnInt, _ := strconv.Atoi(pn)
+	pSize := ctx.DefaultQuery("psize", "10")
+	pSizeInt, _ := strconv.Atoi(pSize)
+	rsp, err := UserSrvClient.GetUserList(context.Background(), &proto.PageInfo{
+		Pn:    uint32(pnInt),
+		PSize: uint32(pSizeInt),
 	})
 	if err != nil {
 		zap.S().Errorw("[GetUserList] 获取用户列表失败", "msg", err.Error())
 		HandleGrpcErrorToHttp(err, ctx)
 		return
 	}
+	reMap := gin.H{
+		"total": rsp.Total,
+	}
 	result := make([]interface{}, 0)
 	for _, value := range rsp.Data {
-		data := make(map[string]interface{})
-		data["id"] = value.Id
-		data["mobile"] = value.Mobile
-		data["name"] = value.NickName
-		data["birthday"] = value.BirthDay
-		data["gender"] = value.Gender
-		result = append(result, data)
+		user := reponse.UserResponse{
+			Id:       value.Id,
+			NickName: value.NickName,
+			//Birthday: time.Time(time.Unix(int64(value.BirthDay), 0)).Format("2006-01-02"),
+			Birthday: reponse.JsonTime(time.Unix(int64(value.BirthDay), 0)),
+			Gender:   value.Gender,
+			Mobile:   value.Mobile,
+		}
+		result = append(result, user)
 	}
-	ctx.JSON(http.StatusOK, result)
+
+	reMap["data"] = result
+	ctx.JSON(http.StatusOK, reMap)
 
 	zap.S().Debug("获取用户列表页")
+}
+
+func PassWordLogin(c *gin.Context) {
+	//表单验证
+	passwordLoginForm := forms.PassWordLoginForm{}
+	if err := c.ShouldBindJSON(&passwordLoginForm); err != nil {
+		HandleValidatorError(c, err)
+		return
+	}
+	userConn, err := grpc.Dial(fmt.Sprintf("%s: %d", global.ServerConfig.UserSrvInfo.Host, global.ServerConfig.UserSrvInfo.Port), grpc.WithInsecure())
+	if err != nil {
+		zap.S().Errorw("[GetUserList] 连接用户服务失败", "msg", err.Error())
+		return
+	}
+	//调用接口
+	UserSrvClient := proto.NewUserClient(userConn)
+
+	//登录的逻辑
+	if rsp, err := UserSrvClient.GetUserByMobile(context.Background(), &proto.MobileRequest{Mobile: passwordLoginForm.Mobile}); err != nil {
+		if e, ok := status.FromError(err); ok {
+			switch e.Code() {
+			case codes.NotFound:
+				c.JSON(http.StatusBadRequest, gin.H{
+					"mobile": "用户不存在",
+				})
+			default:
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"mobile": "登录失败",
+				})
+			}
+			return
+		}
+	} else {
+		if passwdRsp, passwdErr := UserSrvClient.CheckPassword(context.Background(), &proto.PasswordCheckInfo{
+			Password:          passwordLoginForm.PassWord,
+			EncryptedPassword: rsp.PassWord,
+		}); passwdErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"password": "登录失败",
+			})
+			return
+		} else {
+			if passwdRsp.Success {
+
+				//生成token
+				j := middlewares.NewJWT()
+				cliams := models.CustomClaims{
+					ID:          uint(rsp.Id),
+					NickName:    rsp.NickName,
+					AuthorityId: uint(rsp.Role),
+					StandardClaims: jwt.StandardClaims{
+						NotBefore: time.Now().Unix() - 1000,        // 签名生效时间
+						ExpiresAt: time.Now().Unix() + 60*60*24*30, //30天过期
+						Issuer:    "mxshop",
+					},
+				}
+				fmt.Println(global.ServerConfig)
+				token, err := j.CreateToken(cliams)
+				fmt.Println(j.ParseToken(token))
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"password": "登录失败",
+					})
+				}
+				c.JSON(http.StatusOK, gin.H{
+					"msg":       "登录成功",
+					"id":        rsp.Id,
+					"nick_name": rsp.NickName,
+					"token":     token,
+					"expire":    (time.Now().Unix() + 60*60*24*30) * 1000,
+				})
+
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"password": "登录失败",
+				})
+			}
+		}
+	}
+
 }
