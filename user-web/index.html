@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+    <script src="https://cdn.bootcss.com/jquery/3.3.1/jquery.min.js"></script>
+</head>
+<body>
+    <button type="button" id="jquery">请求数据</button>
+    <img src="data:image/png;base64,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" alt="">
+    <div id="content" style="background-color: aquamarine;width: 300px;height: 500px" ></div>
+</body>
+<script type="text/javascript">
+    $(function () {
+        $('#jquery').click(function () {
+            $.ajax({
+                url: 'http://localhost:8021/u/v1/user/list',
+                type: 'get',
+                dataType: 'json',
+                beforeSend: function (request) {
+                    request.setRequestHeader("x-token","eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJJRCI6MSwiTmlja05hbWUiOiJ5eHMwIiwiQXV0aG9yaXR5SWQiOjEsImV4cCI6MTc2NjU1OTc2NSwiaXNzIjoibXhzaG9wIiwibmJmIjoxNzYzOTY2NzY1fQ.i_jha-1HfEzVQgOn52b-EGgr3FTho-S6YY_BxJluEDg");
+                },
+                success: function (result) {
+                    console.log(result.data)
+                    $('#content').text(result.data)
+                },
+                error: function (data) {
+                    alert("请求出错")
+                }
+            })
+        })
+    })
+</script>
+</html>

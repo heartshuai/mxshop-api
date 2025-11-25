@@ -72,12 +72,13 @@ func HandleGrpcErrorToHttp(err error, ctx *gin.Context) {
 	}
 }
 func GetUserList(ctx *gin.Context) {
-	//拨号连接用户grpc服务
+	//拨号连接用户grpc服务  跨域的问题 -后端解决或前端解决
 	userConn, err := grpc.Dial(fmt.Sprintf("%s: %d", global.ServerConfig.UserSrvInfo.Host, global.ServerConfig.UserSrvInfo.Port), grpc.WithInsecure())
 	if err != nil {
 		zap.S().Errorw("[GetUserList] 连接用户服务失败", "msg", err.Error())
 		return
 	}
+	zap.S().Info("获取用户：%d", ctx)
 	//调用接口
 	UserSrvClient := proto.NewUserClient(userConn)
 	pn := ctx.DefaultQuery("pn", "0")
@@ -120,6 +121,12 @@ func PassWordLogin(c *gin.Context) {
 	passwordLoginForm := forms.PassWordLoginForm{}
 	if err := c.ShouldBindJSON(&passwordLoginForm); err != nil {
 		HandleValidatorError(c, err)
+		return
+	}
+	if !store.Verify(passwordLoginForm.CaptchaId, passwordLoginForm.Captcha, true) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"captcha": "验证码错误",
+		})
 		return
 	}
 	userConn, err := grpc.Dial(fmt.Sprintf("%s: %d", global.ServerConfig.UserSrvInfo.Host, global.ServerConfig.UserSrvInfo.Port), grpc.WithInsecure())
